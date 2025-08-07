@@ -1,5 +1,5 @@
 import { WechatyBuilder } from "wechaty";
-import QRCode from "qrcode";
+// Dynamically import 'qrcode' within the scan handler to avoid loading it during startup
 import { ChatGPTBot } from "./bot.js";
 const chatGPTBot = new ChatGPTBot();
 
@@ -16,6 +16,8 @@ async function main() {
   await chatGPTBot.startGPTBot();
   bot
     .on("scan", async (qrcode, status) => {
+      // Lazy-load the heavy 'qrcode' library only when actually needed
+      const { default: QRCode } = await import("qrcode");
       const url = `https://wechaty.js.org/qrcode/${encodeURIComponent(qrcode)}`;
       console.log(`Scan QR Code to login: ${status}\n${url}`);
       console.log(
