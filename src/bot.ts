@@ -1,7 +1,7 @@
 import { ChatGPTPool } from "./chatgpt.js";
 import { config } from "./config.js";
-import { ContactInterface, RoomInterface } from "wechaty/impls";
-import { Message } from "wechaty";
+import type { ContactInterface, RoomInterface } from "wechaty/impls";
+import type { Message } from "wechaty";
 enum MessageType {
   Unknown = 0,
 

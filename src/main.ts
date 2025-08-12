@@ -1,5 +1,4 @@
 import { WechatyBuilder } from "wechaty";
-import QRCode from "qrcode";
 import { ChatGPTBot } from "./bot.js";
 const chatGPTBot = new ChatGPTBot();
 
@@ -18,8 +17,10 @@ async function main() {
     .on("scan", async (qrcode, status) => {
       const url = `https://wechaty.js.org/qrcode/${encodeURIComponent(qrcode)}`;
       console.log(`Scan QR Code to login: ${status}\n${url}`);
+      const QRMod: any = await import("qrcode");
+      const toString = QRMod?.toString || QRMod?.default?.toString;
       console.log(
-        await QRCode.toString(qrcode, { type: "terminal", small: true })
+        await toString(qrcode, { type: "terminal", small: true })
       );
     })
     .on("login", async (user) => {
