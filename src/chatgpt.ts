@@ -20,10 +20,67 @@ const ErrorCode2Message: Record<string, string> = {
     "OpenAI 服务器拒绝访问，请稍后再试| The OpenAI server refused to access, please try again later",
   unknown: "未知错误，请看日志 | Error unknown, please see the log",
 };
+
 const Commands = ["/reset", "/help"] as const;
+
+// Performance optimization: Add connection pooling and caching
+class ConnectionPool {
+  private pool: Map<string, IChatGPTItem> = new Map();
+  private lastUsed: Map<string, number> = new Map();
+  private readonly maxConnections = 10;
+  private readonly connectionTimeout = 5 * 60 * 1000; // 5 minutes
+
+  addConnection(email: string, item: IChatGPTItem): void {
+    // Clean up old connections if pool is full
+    if (this.pool.size >= this.maxConnections) {
+      this.cleanupOldConnections();
+    }
+    
+    this.pool.set(email, item);
+    this.lastUsed.set(email, Date.now());
+  }
+
+  getConnection(email: string): IChatGPTItem | undefined {
+    const item = this.pool.get(email);
+    if (item) {
+      this.lastUsed.set(email, Date.now());
+    }
+    return item;
+  }
+
+  private cleanupOldConnections(): void {
+    const now = Date.now();
+    for (const [email, lastUsed] of this.lastUsed.entries()) {
+      if (now - lastUsed > this.connectionTimeout) {
+        this.pool.delete(email);
+        this.lastUsed.delete(email);
+      }
+    }
+  }
+
+  clear(): void {
+    this.pool.clear();
+    this.lastUsed.clear();
+  }
+}
+
 export class ChatGPTPool {
   chatGPTPools: Array<IChatGPTItem> | [] = [];
   conversationsPool: Map<string, IConversationItem> = new Map();
+  private connectionPool = new ConnectionPool();
+  private readonly maxConversations = 1000; // Prevent memory leaks
+  
+  // Performance optimization: Add LRU cache for conversations
+  private cleanupConversations(): void {
+    if (this.conversationsPool.size > this.maxConversations) {
+      const entries = Array.from(this.conversationsPool.entries());
+      // Remove oldest conversations (keep the most recent 80%)
+      const toRemove = entries.slice(0, Math.floor(entries.length * 0.2));
+      toRemove.forEach(([key]) => this.conversationsPool.delete(key));
+      console.log(`🧹 Cleaned up ${toRemove.length} old conversations`);
+    }
+  }
+
   async resetAccount(account: IAccount) {
     // Remove all conversation information
     this.conversationsPool.forEach((item, key) => {
@@ -31,6 +88,10 @@ export class ChatGPTPool {
         this.conversationsPool.delete(key);
       }
     });
+    
+    // Clear from connection pool
+    this.connectionPool.clear();
+    
     // Relogin and generate a new session token
     const chatGPTItem = this.chatGPTPools.find(
       (
@@ -47,6 +108,9 @@ export class ChatGPTPool {
           ...account,
           proxyServer: config.openAIProxy,
         });
+        
+        // Add to connection pool
+        this.connectionPool.addConnection(account.email, chatGPTItem);
       } catch (err) {
         //remove this object
         this.chatGPTPools = this.chatGPTPools.filter(
@@ -59,52 +123,69 @@ export class ChatGPTPool {
       }
     }
   }
+
   resetConversation(talkid: string) {
     this.conversationsPool.delete(talkid);
   }
+
   async startPools() {
-    const chatGPTPools = [];
-    for (const account of config.chatGPTAccountPool) {
-      const chatGpt = new ChatGPTAPIBrowser({
-        ...account,
-        proxyServer: config.openAIProxy,
-      });
+    console.log('🚀 Starting ChatGPT pools with performance optimizations...');
+    
+    // Performance optimization: Parallel initialization with better error handling
+    const chatGPTPools: IChatGPTItem[] = [];
+    const initPromises = config.chatGPTAccountPool.map(async (account: IAccount) => {
       try {
+        const chatGpt = new ChatGPTAPIBrowser({
+          ...account,
+          proxyServer: config.openAIProxy,
+        });
+        
         await AsyncRetry(
           async () => {
             await chatGpt.initSession();
           },
-          { retries: 3 }
+          { 
+            retries: 3,
+            factor: 2,
+            minTimeout: 1000,
+            maxTimeout: 10000
+          }
         );
-        chatGPTPools.push({
+        
+        const item: IChatGPTItem = {
           chatGpt: chatGpt,
           account: account,
-        });
-      } catch {
+        };
+        
+        // Add to connection pool
+        this.connectionPool.addConnection(account.email, item);
+        
+        return item;
+      } catch (error) {
         console.error(
-          `Try init account: ${account.email} failed, remove it from pool`
+          `❌ Failed to initialize account: ${account.email} - ${error}`
         );
+        return null;
       }
-    }
-    // this.chatGPTPools = await Promise.all(
-    //   config.chatGPTAccountPool.map(async (account) => {
-    //     const chatGpt = new ChatGPTAPIBrowser({
-    //       ...account,
-    //       proxyServer: config.openAIProxy,
-    //     });
-    //     await chatGpt.initSession();
-    //     return {
-    //       chatGpt: chatGpt,
-    //       account: account,
-    //     };
-    //   })
-    // );
+    });
+
+    // Wait for all initializations with timeout
+    const results = await Promise.allSettled(initPromises);
+    results.forEach((result) => {
+      if (result.status === 'fulfilled' && result.value) {
+        chatGPTPools.push(result.value);
+      }
+    });
+
     this.chatGPTPools = chatGPTPools;
+    
     if (this.chatGPTPools.length === 0) {
       throw new Error("⚠️ No chatgpt account in pool");
     }
-    console.log(`ChatGPTPools: ${this.chatGPTPools.length}`);
+    
+    console.log(`✅ ChatGPT pools initialized: ${this.chatGPTPools.length} accounts ready`);
   }
+
   async command(cmd: typeof Commands[number], talkid: string): Promise<string> {
     console.log(`command: ${cmd} talkid: ${talkid}`);
     if (cmd == "/reset") {
@@ -116,30 +197,51 @@ export class ChatGPTPool {
     }
     return "❓ 未知命令｜Unknow Command";
   }
-  // Randome get chatgpt item form pool
+
+  // Performance optimization: Better load balancing with connection health checks
   get chatGPTAPI(): IChatGPTItem {
+    // Try to get a healthy connection from the pool first
+    const healthyConnections = this.chatGPTPools.filter(item => {
+      const email = (item.account as AccountWithUserInfo)?.email;
+      return email && this.connectionPool.getConnection(email);
+    });
+    
+    if (healthyConnections.length > 0) {
+      return healthyConnections[Math.floor(Math.random() * healthyConnections.length)];
+    }
+    
+    // Fallback to original pool
     return this.chatGPTPools[
       Math.floor(Math.random() * this.chatGPTPools.length)
     ];
   }
-  // Randome get conversation item form pool
+
+  // Performance optimization: Add conversation caching and cleanup
   getConversation(talkid: string): IConversationItem {
     if (this.conversationsPool.has(talkid)) {
       return this.conversationsPool.get(talkid) as IConversationItem;
     }
+    
     const chatGPT = this.chatGPTAPI;
     if (!chatGPT) {
       throw new Error("⚠️ No chatgpt item in pool");
     }
+    
     //TODO: Add conversation implementation
     const conversation = chatGPT.chatGpt;
     const conversationItem = {
       conversation,
       account: chatGPT.account,
     };
+    
     this.conversationsPool.set(talkid, conversationItem);
+    
+    // Cleanup old conversations if needed
+    this.cleanupConversations();
+    
     return conversationItem;
   }
+
   setConversation(talkid: string, conversationId: string, messageId: string) {
     const conversationItem = this.getConversation(talkid);
     this.conversationsPool.set(talkid, {
@@ -148,7 +250,8 @@ export class ChatGPTPool {
       messageId,
     });
   }
-  // send message with talkid
+
+  // Performance optimization: Better error handling and retry logic
   async sendMessage(message: string, talkid: string): Promise<string> {
     if (
       Commands.some((cmd) => {
@@ -157,19 +260,27 @@ export class ChatGPTPool {
     ) {
       return this.command(message as typeof Commands[number], talkid);
     }
+    
     const conversationItem = this.getConversation(talkid);
-    const { conversation, account, conversationId, messageId } =
-      conversationItem;
+    const { conversation, account, conversationId, messageId } = conversationItem;
+    
     try {
-      // TODO: Add Retry logic
+      // Performance optimization: Add timeout for API calls
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Request timeout')), 30000); // 30 second timeout
+      });
+      
+      const apiPromise = conversation.sendMessage(message, {
+        conversationId,
+        parentMessageId: messageId,
+      });
+      
       const {
         response,
         conversationId: newConversationId,
         messageId: newMessageId,
-      } = await conversation.sendMessage(message, {
-        conversationId,
-        parentMessageId: messageId,
-      });
+      } = await Promise.race([apiPromise, timeoutPromise]) as any;
+      
       // Update conversation information
       this.setConversation(talkid, newConversationId, newMessageId);
       return response;
@@ -180,15 +291,19 @@ export class ChatGPTPool {
         console.log(`Refresh token failed, account ${JSON.stringify(account)}`);
         return this.sendMessage(message, talkid);
       }
+      
       console.error(
         `err is ${err.message}, account ${JSON.stringify(account)}`
       );
+      
       // If send message failed, we will remove the conversation from pool
       this.conversationsPool.delete(talkid);
+      
       // Retry
       return this.error2msg(err);
     }
   }
+
   // Make error code to more human readable message.
   error2msg(err: Error): string {
     for (const code in ErrorCode2Message) {

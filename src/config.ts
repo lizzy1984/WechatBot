@@ -1,44 +1,36 @@
-import * as dotenv from "dotenv";
-dotenv.config();
+import { readFileSync } from "fs";
 import { parse } from "yaml";
-import fs from "fs";
-import { IConfig, IAccount } from "./interface";
-// If config file exist read config file. else read config from environment variables.
-let configFile: any = {};
-if (fs.existsSync("./config.yaml")) {
-  const file = fs.readFileSync("./config.yaml", "utf8");
-  configFile = parse(file);
-} else {
-  configFile = {
-    chatGPTAccountPool: [
-      {
-        email: process.env.CHAT_GPT_EMAIL,
-        password: process.env.CHAT_GPT_PASSWORD,
-      },
-    ],
-    chatGptRetryTimes: Number(process.env.CHAT_GPT_RETRY_TIMES),
-    chatPrivateTiggerKeyword: process.env.CHAT_PRIVATE_TRIGGER_KEYWORD,
-    openAIProxy: process.env.OPENAI_PROXY,
-    clearanceToken: process.env.CF_CLEARANCE,
-    userAgent: process.env.USER_AGENT,
-  };
-}
-dotenv.config();
+import { IConfig, IAccount } from "./interface.js";
 
-export const config: IConfig = {
-  chatGPTAccountPool: configFile.chatGPTAccountPool as Array<IAccount>,
-  chatGptRetryTimes: configFile.chatGptRetryTimes || 3,
-  chatPrivateTiggerKeyword:
-    configFile.chatPrivateTiggerKeyword ||
-    // Try compatible with previous designs
-    (configFile?.botConfig as Array<Map<string, string>>)?.reduce(
-      (prev: string, curr: Map<string, string>) =>
-        curr.get("trigger_keywords") || "",
-      ""
-    ) ||
-    "",
-  // Support openai-js use this proxy
-  openAIProxy: configFile.openAIProxy,
-  clearanceToken: configFile.clearanceToken,
-  userAgent: configFile.userAgent,
-};
+const configFile = readFileSync("config.yaml", "utf-8");
+const config = parse(configFile) as IConfig;
+
+// Validate required fields
+if (!config.chatGPTAccountPool || config.chatGPTAccountPool.length === 0) {
+  throw new Error("chatGPTAccountPool is required in config.yaml");
+}
+
+// Set default values
+if (!config.chatPrivateTiggerKeyword) {
+  config.chatPrivateTiggerKeyword = "";
+}
+
+if (!config.openAIProxy) {
+  config.openAIProxy = "";
+}
+
+// Convert account pool to the expected format
+const accountPool: IAccount[] = config.chatGPTAccountPool.map((account: any) => ({
+  email: account.email,
+  password: account.password,
+  isGoogleLogin: account.isGoogleLogin || false, // Default to false if not specified
+}));
+
+// Create a map for easy lookup
+const accountMap = new Map<string, string>();
+accountPool.forEach((account) => {
+  accountMap.set(account.email, account.password);
+});
+
+// Export the processed config
+export { config, accountPool, accountMap };

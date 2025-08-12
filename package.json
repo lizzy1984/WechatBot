@@ -4,9 +4,18 @@
   "description": "",
   "main": "dist/main.js",
   "export": "dist/main.js",
+  "type": "module",
   "scripts": {
     "dev": "nodemon --exec node --watch config.yaml --loader ts-node/esm src/main.ts",
-    "build": "tsc"
+    "build": "tsc --build",
+    "build:fast": "tsc --build --incremental",
+    "build:clean": "rm -rf dist .tsbuildinfo && tsc --build",
+    "build:watch": "tsc --build --watch",
+    "start": "node dist/main.js",
+    "start:prod": "NODE_ENV=production node --max-old-space-size=4096 dist/main.js",
+    "analyze": "npx tsx src/analyze-bundle.ts",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix"
   },
   "author": "",
   "license": "ISC",
@@ -25,14 +34,21 @@
     "@types/async-retry": "^1.4.5",
     "@types/qrcode": "^1.5.0",
     "@types/uuid": "^9.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
     "nodemon": "^2.0.20",
+    "tsx": "^4.0.0",
     "ts-node": "^10.9.1"
   },
   "nodemonConfig": {
-    "watch": "src",
-    "ext": "ts",
+    "watch": ["src", "config.yaml"],
+    "ext": "ts,js,yaml",
     "exec": "node --loader ts-node/esm src/main.ts",
-    "delay": 500
+    "delay": 500,
+    "ignore": ["dist/**/*", ".tsbuildinfo"]
   },
-  "type": "module"
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
