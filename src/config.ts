@@ -2,7 +2,7 @@ import * as dotenv from "dotenv";
 dotenv.config();
 import { parse } from "yaml";
 import fs from "fs";
-import { IConfig, IAccount } from "./interface";
+import { IConfig, IAccount } from "./interface.js";
 // If config file exist read config file. else read config from environment variables.
 let configFile: any = {};
 if (fs.existsSync("./config.yaml")) {
@@ -23,8 +23,6 @@ if (fs.existsSync("./config.yaml")) {
     userAgent: process.env.USER_AGENT,
   };
 }
-dotenv.config();
-
 export const config: IConfig = {
   chatGPTAccountPool: configFile.chatGPTAccountPool as Array<IAccount>,
   chatGptRetryTimes: configFile.chatGptRetryTimes || 3,

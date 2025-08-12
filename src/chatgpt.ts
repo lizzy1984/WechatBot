@@ -1,4 +1,4 @@
-import { ChatGPTAPI, ChatGPTAPIBrowser } from "chatgpt";
+import { ChatGPTAPIBrowser } from "chatgpt";
 
 import { config } from "./config.js";
 import AsyncRetry from "async-retry";
@@ -37,7 +37,7 @@ export class ChatGPTPool {
         item: any
       ): item is IChatGPTItem & {
         account: AccountWithUserInfo;
-        chatGpt: ChatGPTAPI;
+        chatGpt: ChatGPTAPIBrowser;
       } => item.account.email === account.email
     );
     if (chatGPTItem) {
@@ -63,43 +63,32 @@ export class ChatGPTPool {
     this.conversationsPool.delete(talkid);
   }
   async startPools() {
-    const chatGPTPools = [];
-    for (const account of config.chatGPTAccountPool) {
-      const chatGpt = new ChatGPTAPIBrowser({
-        ...account,
-        proxyServer: config.openAIProxy,
-      });
-      try {
-        await AsyncRetry(
-          async () => {
-            await chatGpt.initSession();
-          },
-          { retries: 3 }
-        );
-        chatGPTPools.push({
-          chatGpt: chatGpt,
-          account: account,
+    const results = await Promise.all(
+      config.chatGPTAccountPool.map(async (account) => {
+        const chatGpt = new ChatGPTAPIBrowser({
+          ...account,
+          proxyServer: config.openAIProxy,
         });
-      } catch {
-        console.error(
-          `Try init account: ${account.email} failed, remove it from pool`
-        );
-      }
-    }
-    // this.chatGPTPools = await Promise.all(
-    //   config.chatGPTAccountPool.map(async (account) => {
-    //     const chatGpt = new ChatGPTAPIBrowser({
-    //       ...account,
-    //       proxyServer: config.openAIProxy,
-    //     });
-    //     await chatGpt.initSession();
-    //     return {
-    //       chatGpt: chatGpt,
-    //       account: account,
-    //     };
-    //   })
-    // );
-    this.chatGPTPools = chatGPTPools;
+        try {
+          await AsyncRetry(
+            async () => {
+              await chatGpt.initSession();
+            },
+            { retries: 3 }
+          );
+          return {
+            chatGpt,
+            account,
+          } as IChatGPTItem;
+        } catch {
+          console.error(
+            `Try init account: ${account.email} failed, remove it from pool`
+          );
+          return undefined;
+        }
+      })
+    );
+    this.chatGPTPools = results.filter(Boolean) as IChatGPTItem[];
     if (this.chatGPTPools.length === 0) {
       throw new Error("⚠️ No chatgpt account in pool");
     }
