@@ -1,8 +1,9 @@
 import { ChatGPTAPIBrowser } from "chatgpt";
+
 export interface AccountWithUserInfo {
   password: string;
   email: string;
-  isGoogleLogin: boolean;
+  isGoogleLogin?: boolean; // Make optional for backward compatibility
 }
 
 // Account will be one in the session token or email and password
@@ -12,6 +13,7 @@ export interface IChatGPTItem {
   chatGpt: ChatGPTAPIBrowser;
   account: IAccount;
 }
+
 export interface IConversationItem {
   conversation: ChatGPTAPIBrowser;
   account: IAccount;

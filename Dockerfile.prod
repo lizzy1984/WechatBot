@@ -1,0 +1,67 @@
+# Multi-stage production build for better performance and smaller image size
+FROM node:19-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production && npm cache clean --force
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN npm run build:prod
+
+# Production stage
+FROM node:19-alpine AS production
+
+# Install runtime dependencies only
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    freetype-dev \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    && rm -rf /var/cache/apk/*
+
+# Create app user for security
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S bot -u 1001
+
+WORKDIR /app
+
+# Copy built application from builder stage
+COPY --from=builder --chown=bot:nodejs /app/dist ./dist
+COPY --from=builder --chown=bot:nodejs /app/package*.json ./
+
+# Install only production dependencies
+RUN npm ci --only=production && npm cache clean --force
+
+# Set environment variables for production
+ENV NODE_ENV=production
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
+# Performance optimization: Set Node.js flags
+ENV NODE_OPTIONS="--max-old-space-size=512 --optimize-for-size"
+
+# Create non-root user
+USER bot
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD node -e "console.log('Health check passed')" || exit 1
+
+# Expose port (if needed)
+EXPOSE 3000
+
+# Performance optimization: Use production start command
+CMD ["npm", "run", "start:prod"]

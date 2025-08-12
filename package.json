@@ -6,7 +6,16 @@
   "export": "dist/main.js",
   "scripts": {
     "dev": "nodemon --exec node --watch config.yaml --loader ts-node/esm src/main.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "build:prod": "tsc && npm run optimize",
+    "optimize": "node scripts/optimize.js",
+    "analyze": "node scripts/analyze-bundle.js",
+    "test:perf": "node scripts/test-performance.js",
+    "monitor": "node scripts/monitor-performance.js",
+    "start": "node dist/main.js",
+    "start:prod": "NODE_ENV=production node --max-old-space-size=512 dist/main.js",
+    "docker:build": "docker build -f Dockerfile.prod -t wechat-chatgpt:prod .",
+    "docker:run": "docker run --env-file .env -p 3000:3000 wechat-chatgpt:prod"
   },
   "author": "",
   "license": "ISC",
@@ -26,7 +35,8 @@
     "@types/qrcode": "^1.5.0",
     "@types/uuid": "^9.0.0",
     "nodemon": "^2.0.20",
-    "ts-node": "^10.9.1"
+    "ts-node": "^10.9.1",
+    "webpack-bundle-analyzer": "^4.10.2"
   },
   "nodemonConfig": {
     "watch": "src",
