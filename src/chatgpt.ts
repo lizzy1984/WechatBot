@@ -63,26 +63,23 @@ export class ChatGPTPool {
     this.conversationsPool.delete(talkid);
   }
   async startPools() {
-    const chatGPTPools = [];
-    for (const account of config.chatGPTAccountPool) {
-      const chatGpt = new ChatGPTAPIBrowser({
-        ...account,
-        proxyServer: config.openAIProxy,
-      });
-      try {
-        await AsyncRetry(
-          async () => {
-            await chatGpt.initSession();
-          },
-          { retries: 3 }
-        );
-        chatGPTPools.push({
-          chatGpt: chatGpt,
-          account: account,
+    const chatGPTPools: IChatGPTItem[] = [];
+    const results = await Promise.allSettled(
+      config.chatGPTAccountPool.map(async (account) => {
+        const chatGpt = new ChatGPTAPIBrowser({
+          ...account,
+          proxyServer: config.openAIProxy,
         });
-      } catch {
+        await AsyncRetry(async () => await chatGpt.initSession(), { retries: 3 });
+        return { chatGpt, account };
+      })
+    );
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        chatGPTPools.push(result.value);
+      } else {
         console.error(
-          `Try init account: ${account.email} failed, remove it from pool`
+          `Try init account failed, remove it from pool: ${result.reason}`
         );
       }
     }
