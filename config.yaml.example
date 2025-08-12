@@ -1,6 +1,24 @@
+# WeChat ChatGPT Bot Configuration
+# Copy this file to config.yaml and fill in your details
+
 chatGPTAccountPool:
-  - email: email
-    password: password
-    isGoogleLogin: false
-chatPrivateTiggerKeyword: ""
-openAIProxy: ""
+  - email: "your-email@example.com"
+    password: "your-password"
+
+# Performance optimization settings
+performance:
+  maxMessageCacheSize: 100          # Maximum number of cached messages
+  maxConversations: 1000           # Maximum number of concurrent conversations
+  healthCheckIntervalMs: 300000    # Health check interval in milliseconds (5 minutes)
+  startupTimeoutMs: 60000          # Startup timeout in milliseconds (60 seconds)
+  enablePerformanceLogging: true   # Enable performance logging
+  enableMemoryMonitoring: true     # Enable memory usage monitoring
+
+# Bot configuration
+chatPrivateTiggerKeyword: ""       # Trigger keyword for private chats
+chatGptRetryTimes: 3              # Number of retry attempts for failed requests
+
+# OpenAI proxy settings
+openAIProxy: ""                    # Proxy server for OpenAI requests
+clearanceToken: ""                 # Cloudflare clearance token
+userAgent: ""                      # Custom user agent string
