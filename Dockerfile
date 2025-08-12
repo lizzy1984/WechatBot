@@ -1,15 +1,66 @@
-FROM node:19 AS app
+# Multi-stage build for optimized performance
+FROM node:18-alpine AS dependencies
 
-# We don't need the standalone Chromium
-RUN apt-get install -y wget \ 
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \ 
-    && echo "deb http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
-    && apt-get update && apt-get -y install google-chrome-stable chromium  xvfb\
-    && rm -rf /var/lib/apt/lists/* \
-    && echo "Chrome: " && google-chrome --version
+# Set working directory
 WORKDIR /app
+
+# Install dumb-init for proper signal handling
+RUN apk add --no-cache dumb-init
+
+# Copy package files
 COPY package*.json ./
-RUN npm install
-COPY . .
-ENV WECHATY_PUPPET_WECHAT_ENDPOINT=/usr/bin/google-chrome
-CMD xvfb-run --server-args="-screen 0 1280x800x24 -ac -nolisten tcp -dpi 96 +extension RANDR" npm run dev
+
+# Install dependencies with optimizations
+RUN npm ci --only=production --ignore-scripts && \
+    npm cache clean --force
+
+# Build stage
+FROM node:18-alpine AS build
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install all dependencies including dev dependencies for build
+RUN npm ci --ignore-scripts
+
+# Copy source code
+COPY src/ ./src/
+
+# Build the application
+RUN npm run build
+
+# Production stage
+FROM node:18-alpine AS production
+
+# Install dumb-init for proper signal handling
+RUN apk add --no-cache dumb-init
+
+# Create non-root user for security
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S wechat-bot -u 1001
+
+WORKDIR /app
+
+# Copy production dependencies
+COPY --from=dependencies --chown=wechat-bot:nodejs /app/node_modules ./node_modules
+
+# Copy built application
+COPY --from=build --chown=wechat-bot:nodejs /app/dist ./dist
+
+# Copy package.json for metadata
+COPY --chown=wechat-bot:nodejs package.json ./
+
+# Switch to non-root user
+USER wechat-bot
+
+# Expose port (if needed for health checks)
+EXPOSE 3000
+
+# Use dumb-init to handle signals properly
+ENTRYPOINT ["dumb-init", "--"]
+
+# Start the application
+CMD ["node", "dist/main.js"]

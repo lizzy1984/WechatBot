@@ -1,29 +1,32 @@
-import { ChatGPTAPIBrowser } from "chatgpt";
+import type { ChatGPTAPI } from "chatgpt";
+
 export interface AccountWithUserInfo {
-  password: string;
-  email: string;
-  isGoogleLogin: boolean;
+  readonly password: string;
+  readonly email: string;
+  readonly isGoogleLogin: boolean;
+  readonly apiKey: string; // Required for the new API
 }
 
 // Account will be one in the session token or email and password
 export type IAccount = AccountWithUserInfo;
 
 export interface IChatGPTItem {
-  chatGpt: ChatGPTAPIBrowser;
-  account: IAccount;
+  chatGpt: ChatGPTAPI; // Remove readonly to allow reassignment during reset
+  readonly account: IAccount;
 }
+
 export interface IConversationItem {
-  conversation: ChatGPTAPIBrowser;
-  account: IAccount;
-  conversationId?: string;
-  messageId?: string;
+  readonly conversation: ChatGPTAPI;
+  readonly account: IAccount;
+  readonly conversationId?: string;
+  readonly messageId?: string;
 }
 
 export interface IConfig {
-  chatGPTAccountPool: IAccount[];
-  chatGptRetryTimes: number;
-  chatPrivateTiggerKeyword: string;
-  openAIProxy?: string;
-  clearanceToken: string;
-  userAgent: string;
+  readonly chatGPTAccountPool: readonly IAccount[];
+  readonly chatGptRetryTimes: number;
+  readonly chatPrivateTiggerKeyword: string;
+  readonly openAIProxy?: string;
+  readonly clearanceToken: string;
+  readonly userAgent: string;
 }

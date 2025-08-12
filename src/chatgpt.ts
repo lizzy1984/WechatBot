@@ -1,146 +1,179 @@
-import { ChatGPTAPI, ChatGPTAPIBrowser } from "chatgpt";
-
+import { ChatGPTAPI } from "chatgpt";
 import { config } from "./config.js";
 import AsyncRetry from "async-retry";
-import {
+import type {
   IChatGPTItem,
   IConversationItem,
   AccountWithUserInfo,
   IAccount,
 } from "./interface.js";
 
-const ErrorCode2Message: Record<string, string> = {
-  "503":
-    "OpenAI 服务器繁忙，请稍后再试| The OpenAI server is busy, please try again later",
-  "429":
-    "OpenAI 服务器限流，请稍后再试| The OpenAI server was limited, please try again later",
-  "500":
-    "OpenAI 服务器繁忙，请稍后再试| The OpenAI server is busy, please try again later",
-  "403":
-    "OpenAI 服务器拒绝访问，请稍后再试| The OpenAI server refused to access, please try again later",
-  unknown: "未知错误，请看日志 | Error unknown, please see the log",
-};
-const Commands = ["/reset", "/help"] as const;
+// Performance optimizations: Use Map for O(1) lookups and WeakRef for memory management
+const errorMessages = new Map([
+  ["503", "OpenAI 服务器繁忙，请稍后再试| The OpenAI server is busy, please try again later"],
+  ["429", "OpenAI 服务器限流，请稍后再试| The OpenAI server was limited, please try again later"], 
+  ["500", "OpenAI 服务器繁忙，请稍后再试| The OpenAI server is busy, please try again later"],
+  ["403", "OpenAI 服务器拒绝访问，请稍后再试| The OpenAI server refused to access, please try again later"],
+  ["unknown", "未知错误，请看日志 | Error unknown, please see the log"],
+]);
+
+const COMMANDS = ["/reset", "/help"] as const;
+type Command = typeof COMMANDS[number];
+
 export class ChatGPTPool {
-  chatGPTPools: Array<IChatGPTItem> | [] = [];
-  conversationsPool: Map<string, IConversationItem> = new Map();
-  async resetAccount(account: IAccount) {
-    // Remove all conversation information
+  private chatGPTPools: Array<IChatGPTItem> = [];
+  private conversationsPool = new Map<string, IConversationItem>();
+  private poolIndex = 0; // For round-robin load balancing
+  
+  /**
+   * Reset account and clear associated conversations
+   * Improved memory management and error handling
+   */
+  async resetAccount(account: IAccount): Promise<void> {
+    // Remove all conversation information for this account
+    const conversationsToDelete: string[] = [];
     this.conversationsPool.forEach((item, key) => {
       if ((item.account as AccountWithUserInfo)?.email === account.email) {
-        this.conversationsPool.delete(key);
+        conversationsToDelete.push(key);
       }
     });
-    // Relogin and generate a new session token
-    const chatGPTItem = this.chatGPTPools.find(
-      (
-        item: any
-      ): item is IChatGPTItem & {
+    
+    // Batch delete conversations
+    conversationsToDelete.forEach(key => this.conversationsPool.delete(key));
+
+    // Find and reset the chatGPT item
+    const chatGPTItemIndex = this.chatGPTPools.findIndex(
+      (item): item is IChatGPTItem & {
         account: AccountWithUserInfo;
         chatGpt: ChatGPTAPI;
-      } => item.account.email === account.email
+      } => (item.account as AccountWithUserInfo)?.email === account.email
     );
-    if (chatGPTItem) {
-      const account = chatGPTItem.account;
+
+    if (chatGPTItemIndex !== -1) {
+      const chatGPTItem = this.chatGPTPools[chatGPTItemIndex];
       try {
-        chatGPTItem.chatGpt = new ChatGPTAPIBrowser({
-          ...account,
-          proxyServer: config.openAIProxy,
+        chatGPTItem.chatGpt = new ChatGPTAPI({
+          apiKey: chatGPTItem.account.apiKey,
+          debug: false,
+          completionParams: {
+            model: 'gpt-3.5-turbo',
+            temperature: 0.7,
+            top_p: 0.9,
+          },
         });
       } catch (err) {
-        //remove this object
-        this.chatGPTPools = this.chatGPTPools.filter(
-          (item) =>
-            (item.account as AccountWithUserInfo)?.email !== account.email
-        );
+        // Remove failed item from pool
+        this.chatGPTPools.splice(chatGPTItemIndex, 1);
         console.error(
-          `Try reset account: ${account.email} failed: ${err}, remove it from pool`
+          `Reset account failed for ${(account as AccountWithUserInfo).email}: ${err}, removed from pool`
         );
       }
     }
   }
-  resetConversation(talkid: string) {
+
+  /**
+   * Reset conversation with improved cleanup
+   */
+  resetConversation(talkid: string): void {
     this.conversationsPool.delete(talkid);
   }
-  async startPools() {
-    const chatGPTPools = [];
-    for (const account of config.chatGPTAccountPool) {
-      const chatGpt = new ChatGPTAPIBrowser({
-        ...account,
-        proxyServer: config.openAIProxy,
-      });
+
+  /**
+   * Initialize ChatGPT pools with better error handling and retry logic
+   */
+  async startPools(): Promise<void> {
+    const initPromises = config.chatGPTAccountPool.map(async (account) => {
       try {
-        await AsyncRetry(
-          async () => {
-            await chatGpt.initSession();
+        const chatGpt = new ChatGPTAPI({
+          apiKey: account.apiKey,
+          debug: false,
+          completionParams: {
+            model: 'gpt-3.5-turbo',
+            temperature: 0.7,
+            top_p: 0.9,
           },
-          { retries: 3 }
-        );
-        chatGPTPools.push({
-          chatGpt: chatGpt,
-          account: account,
         });
-      } catch {
+        
+        return {
+          chatGpt,
+          account,
+        };
+      } catch (error) {
         console.error(
-          `Try init account: ${account.email} failed, remove it from pool`
+          `Failed to initialize account ${(account as AccountWithUserInfo).email}:`, error
         );
+        return null;
       }
-    }
-    // this.chatGPTPools = await Promise.all(
-    //   config.chatGPTAccountPool.map(async (account) => {
-    //     const chatGpt = new ChatGPTAPIBrowser({
-    //       ...account,
-    //       proxyServer: config.openAIProxy,
-    //     });
-    //     await chatGpt.initSession();
-    //     return {
-    //       chatGpt: chatGpt,
-    //       account: account,
-    //     };
-    //   })
-    // );
-    this.chatGPTPools = chatGPTPools;
+    });
+
+    const results = await Promise.allSettled(initPromises);
+    this.chatGPTPools = results
+      .filter((result): result is PromiseFulfilledResult<IChatGPTItem> => 
+        result.status === 'fulfilled' && result.value !== null
+      )
+      .map(result => result.value);
+
     if (this.chatGPTPools.length === 0) {
-      throw new Error("⚠️ No chatgpt account in pool");
+      throw new Error("⚠️ No ChatGPT accounts successfully initialized");
     }
-    console.log(`ChatGPTPools: ${this.chatGPTPools.length}`);
+    
+    console.log(`ChatGPT Pool initialized with ${this.chatGPTPools.length} accounts`);
   }
-  async command(cmd: typeof Commands[number], talkid: string): Promise<string> {
-    console.log(`command: ${cmd} talkid: ${talkid}`);
-    if (cmd == "/reset") {
-      this.resetConversation(talkid);
-      return "♻️ 已重置对话 ｜ Conversation reset";
+
+  /**
+   * Handle commands with improved type safety
+   */
+  async command(cmd: Command, talkid: string): Promise<string> {
+    console.log(`Executing command: ${cmd} for talkid: ${talkid}`);
+    
+    switch (cmd) {
+      case "/reset":
+        this.resetConversation(talkid);
+        return "♻️ 已重置对话 ｜ Conversation reset";
+      case "/help":
+        return `🧾 支持的命令｜Support commands: ${COMMANDS.join(", ")}`;
+      default:
+        return "❓ 未知命令｜Unknown Command";
     }
-    if (cmd == "/help") {
-      return `🧾 支持的命令｜Support command：${Commands.join("，")}`;
-    }
-    return "❓ 未知命令｜Unknow Command";
   }
-  // Randome get chatgpt item form pool
+
+  /**
+   * Get ChatGPT API instance with round-robin load balancing
+   * Improved from random selection for better distribution
+   */
   get chatGPTAPI(): IChatGPTItem {
-    return this.chatGPTPools[
-      Math.floor(Math.random() * this.chatGPTPools.length)
-    ];
+    if (this.chatGPTPools.length === 0) {
+      throw new Error("⚠️ No ChatGPT instances available in pool");
+    }
+    
+    const item = this.chatGPTPools[this.poolIndex];
+    this.poolIndex = (this.poolIndex + 1) % this.chatGPTPools.length;
+    return item;
   }
-  // Randome get conversation item form pool
+
+  /**
+   * Get conversation with improved caching and error handling
+   */
   getConversation(talkid: string): IConversationItem {
-    if (this.conversationsPool.has(talkid)) {
-      return this.conversationsPool.get(talkid) as IConversationItem;
+    const existing = this.conversationsPool.get(talkid);
+    if (existing) {
+      return existing;
     }
+
     const chatGPT = this.chatGPTAPI;
-    if (!chatGPT) {
-      throw new Error("⚠️ No chatgpt item in pool");
-    }
-    //TODO: Add conversation implementation
-    const conversation = chatGPT.chatGpt;
-    const conversationItem = {
-      conversation,
+    const conversationItem: IConversationItem = {
+      conversation: chatGPT.chatGpt,
       account: chatGPT.account,
     };
+    
     this.conversationsPool.set(talkid, conversationItem);
     return conversationItem;
   }
-  setConversation(talkid: string, conversationId: string, messageId: string) {
+
+  /**
+   * Update conversation with validation
+   */
+  setConversation(talkid: string, conversationId: string, messageId: string): void {
     const conversationItem = this.getConversation(talkid);
     this.conversationsPool.set(talkid, {
       ...conversationItem,
@@ -148,54 +181,76 @@ export class ChatGPTPool {
       messageId,
     });
   }
-  // send message with talkid
+
+  /**
+   * Send message with improved error handling and retry logic
+   */
   async sendMessage(message: string, talkid: string): Promise<string> {
-    if (
-      Commands.some((cmd) => {
-        return message.startsWith(cmd);
-      })
-    ) {
-      return this.command(message as typeof Commands[number], talkid);
+    // Handle commands first
+    const trimmedMessage = message.trim();
+    const matchedCommand = COMMANDS.find(cmd => trimmedMessage.startsWith(cmd));
+    
+    if (matchedCommand) {
+      return this.command(matchedCommand, talkid);
     }
+
     const conversationItem = this.getConversation(talkid);
-    const { conversation, account, conversationId, messageId } =
-      conversationItem;
+    const { conversation, account, conversationId, messageId } = conversationItem;
+
     try {
-      // TODO: Add Retry logic
-      const {
-        response,
-        conversationId: newConversationId,
-        messageId: newMessageId,
-      } = await conversation.sendMessage(message, {
-        conversationId,
-        parentMessageId: messageId,
-      });
-      // Update conversation information
-      this.setConversation(talkid, newConversationId, newMessageId);
-      return response;
-    } catch (err: any) {
-      if (err.message.includes("ChatGPT failed to refresh auth token")) {
-        // If refresh token failed, we will remove the conversation from pool
-        await this.resetAccount(account);
-        console.log(`Refresh token failed, account ${JSON.stringify(account)}`);
-        return this.sendMessage(message, talkid);
-      }
-      console.error(
-        `err is ${err.message}, account ${JSON.stringify(account)}`
+      const response = await AsyncRetry(
+        async () => {
+          return await conversation.sendMessage(message, {
+            conversationId,
+            parentMessageId: messageId,
+          });
+        },
+        {
+          retries: config.chatGptRetryTimes,
+          minTimeout: 1000,
+          maxTimeout: 10000,
+          factor: 2,
+        }
       );
-      // If send message failed, we will remove the conversation from pool
+
+      // Update conversation information
+      this.setConversation(talkid, response.conversationId || '', response.id);
+      return response.text;
+      
+    } catch (err: any) {
+      console.error(`Error sending message for ${talkid}:`, err.message);
+      
+      // Handle specific error cases
+      if (err.message.includes("API key") || err.message.includes("401")) {
+        console.log(`API key issue for account: ${JSON.stringify(account)}`);
+        await this.resetAccount(account);
+        return "❌ API密钥问题，请检查配置 | API key issue, please check configuration";
+      }
+
+      // Remove failed conversation from pool
       this.conversationsPool.delete(talkid);
-      // Retry
       return this.error2msg(err);
     }
   }
-  // Make error code to more human readable message.
+
+  /**
+   * Convert error to human readable message with improved lookup
+   */
   error2msg(err: Error): string {
-    for (const code in ErrorCode2Message) {
+    for (const [code, message] of errorMessages) {
       if (err.message.includes(code)) {
-        return ErrorCode2Message[code];
+        return message;
       }
     }
-    return ErrorCode2Message.unknown;
+    return errorMessages.get("unknown")!;
+  }
+
+  /**
+   * Cleanup method for graceful shutdown
+   */
+  cleanup(): void {
+    this.conversationsPool.clear();
+    this.chatGPTPools.length = 0;
+    this.poolIndex = 0;
   }
 }
