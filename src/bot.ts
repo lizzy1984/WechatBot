@@ -2,6 +2,7 @@ import { ChatGPTPool } from "./chatgpt.js";
 import { config } from "./config.js";
 import { ContactInterface, RoomInterface } from "wechaty/impls";
 import { Message } from "wechaty";
+
 enum MessageType {
   Unknown = 0,
 
@@ -24,26 +25,67 @@ enum MessageType {
 }
 
 const SINGLE_MESSAGE_MAX_SIZE = 500;
+
 export class ChatGPTBot {
   // Record talkid with conversation id
   chatGPTPool = new ChatGPTPool();
   chatPrivateTiggerKeyword = config.chatPrivateTiggerKeyword;
   botName: string = "";
   ready = false;
+  
+  // Performance optimization: Add message caching
+  private messageCache = new Map<string, { response: string; timestamp: number }>();
+  private readonly cacheTTL = 5 * 60 * 1000; // 5 minutes
+  private readonly maxCacheSize = 1000;
+
   setBotName(botName: string) {
     this.botName = botName;
   }
+
   get chatGroupTiggerKeyword(): string {
     return `@${this.botName}`;
   }
+
   async startGPTBot() {
     console.debug(`Start GPT Bot Config is:${JSON.stringify(config)}`);
     await this.chatGPTPool.startPools();
     console.debug(`🤖️ Start GPT Bot Success, ready to handle message!`);
     this.ready = true;
   }
+
   // TODO: Add reset conversation id and ping pong
   async command(): Promise<void> {}
+
+  // Performance optimization: Add message deduplication and caching
+  private getCachedResponse(text: string): string | null {
+    const cacheKey = this.generateCacheKey(text);
+    const cached = this.messageCache.get(cacheKey);
+    
+    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
+      return cached.response;
+    }
+    
+    return null;
+  }
+
+  private setCachedResponse(text: string, response: string): void {
+    const cacheKey = this.generateCacheKey(text);
+    
+    // Cleanup cache if it's too large
+    if (this.messageCache.size >= this.maxCacheSize) {
+      const entries = Array.from(this.messageCache.entries());
+      const toRemove = entries.slice(0, Math.floor(entries.length * 0.2));
+      toRemove.forEach(([key]) => this.messageCache.delete(key));
+    }
+    
+    this.messageCache.set(cacheKey, { response, timestamp: Date.now() });
+  }
+
+  private generateCacheKey(text: string): string {
+    // Simple hash for cache key
+    return text.length > 50 ? text.substring(0, 50) + '...' : text;
+  }
+
   // remove more times conversation and mention
   cleanMessage(rawText: string, privateChat: boolean = false): string {
     let text = rawText;
@@ -58,9 +100,23 @@ export class ChatGPTBot {
     // remove more text via - - - - - - - - - - - - - - -
     return text;
   }
+
   async getGPTMessage(text: string, talkerId: string): Promise<string> {
-    return await this.chatGPTPool.sendMessage(text, talkerId);
+    // Performance optimization: Check cache first
+    const cached = this.getCachedResponse(text);
+    if (cached) {
+      console.log(`📋 Using cached response for: ${text.substring(0, 50)}...`);
+      return cached;
+    }
+    
+    const response = await this.chatGPTPool.sendMessage(text, talkerId);
+    
+    // Cache the response
+    this.setCachedResponse(text, response);
+    
+    return response;
   }
+
   // The message is segmented according to its size
   async trySay(
     talker: RoomInterface | ContactInterface,
@@ -68,15 +124,40 @@ export class ChatGPTBot {
   ): Promise<void> {
     const messages: Array<string> = [];
     let message = mesasge;
+    
+    // Performance optimization: Better message segmentation
     while (message.length > SINGLE_MESSAGE_MAX_SIZE) {
-      messages.push(message.slice(0, SINGLE_MESSAGE_MAX_SIZE));
-      message = message.slice(SINGLE_MESSAGE_MAX_SIZE);
+      // Try to break at sentence boundaries
+      let breakPoint = SINGLE_MESSAGE_MAX_SIZE;
+      const lastPeriod = message.lastIndexOf('。', SINGLE_MESSAGE_MAX_SIZE);
+      const lastExclamation = message.lastIndexOf('！', SINGLE_MESSAGE_MAX_SIZE);
+      const lastQuestion = message.lastIndexOf('？', SINGLE_MESSAGE_MAX_SIZE);
+      const lastNewline = message.lastIndexOf('\n', SINGLE_MESSAGE_MAX_SIZE);
+      
+      if (lastPeriod > SINGLE_MESSAGE_MAX_SIZE * 0.8) breakPoint = lastPeriod + 1;
+      else if (lastExclamation > SINGLE_MESSAGE_MAX_SIZE * 0.8) breakPoint = lastExclamation + 1;
+      else if (lastQuestion > SINGLE_MESSAGE_MAX_SIZE * 0.8) breakPoint = lastQuestion + 1;
+      else if (lastNewline > SINGLE_MESSAGE_MAX_SIZE * 0.8) breakPoint = lastNewline + 1;
+      
+      messages.push(message.slice(0, breakPoint));
+      message = message.slice(breakPoint);
     }
-    messages.push(message);
-    for (const msg of messages) {
-      await talker.say(msg);
+    
+    if (message.length > 0) {
+      messages.push(message);
+    }
+    
+    // Performance optimization: Send messages with rate limiting
+    for (let i = 0; i < messages.length; i++) {
+      await talker.say(messages[i]);
+      
+      // Add small delay between messages to avoid rate limiting
+      if (i < messages.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
     }
   }
+
   // Check whether the ChatGPT processing can be triggered
   tiggerGPTMessage(text: string, privateChat: boolean = false): boolean {
     const chatPrivateTiggerKeyword = this.chatPrivateTiggerKeyword;
@@ -93,6 +174,7 @@ export class ChatGPTBot {
     }
     return triggered;
   }
+
   // Filter out the message that does not need to be processed
   isNonsense(
     talker: ContactInterface,
@@ -131,21 +213,42 @@ export class ChatGPTBot {
     const result = `${text}\n ------\n ${gptMessage}`;
     await this.trySay(room, result);
   }
+
+  // Performance optimization: Add message queuing and better error handling
   async onMessage(message: Message) {
     const talker = message.talker();
     const rawText = message.text();
     const room = message.room();
     const messageType = message.type();
     const privateChat = !room;
+    
     if (this.isNonsense(talker, messageType, rawText)) {
       return;
     }
+    
     if (this.tiggerGPTMessage(rawText, privateChat)) {
       const text = this.cleanMessage(rawText, privateChat);
-      if (privateChat) {
-        return await this.onPrivateMessage(talker, text);
-      } else {
-        return await this.onGroupMessage(talker, text, room);
+      
+      try {
+        if (privateChat) {
+          return await this.onPrivateMessage(talker, text);
+        } else {
+          return await this.onGroupMessage(talker, text, room);
+        }
+      } catch (error) {
+        console.error(`❌ Error processing message: ${error}`);
+        
+        // Send error message to user
+        const errorMsg = "抱歉，处理消息时出现错误，请稍后再试。";
+        try {
+          if (privateChat) {
+            await talker.say(errorMsg);
+          } else if (room) {
+            await room.say(errorMsg);
+          }
+        } catch (sendError) {
+          console.error(`Failed to send error message: ${sendError}`);
+        }
       }
     } else {
       return;
